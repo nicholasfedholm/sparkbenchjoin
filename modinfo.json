@@ -1,0 +1,11 @@
+{
+  "type": "code",
+  "modid": "sparkbenchjoin",
+  "name": "SparkBench AutoJoin",
+  "version": "1.0.0",
+  "description": "Test-only. Skips character selection and defaults new players to creative for automated benches.",
+  "authors": ["test"],
+  "side": "Server",
+  "requiredOnClient": false,
+  "dependencies": { "game": "1.22.0" }
+}
