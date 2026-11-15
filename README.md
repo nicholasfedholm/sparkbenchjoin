@@ -3,6 +3,7 @@
 Vintage Story 1.22 test/bench helper mod. On a fresh world it lets the player join without the character creation dialog and in Creative mode, so automated benches reach a playing state with terrain loading.
 
 - Server side, on PlayerCreate: sets the player's `createCharacter` moddata to true (the client then skips the dialog) and switches the player to Creative (set `SPARKBENCH_SURVIVAL=1` to keep survival).
+- Harmony prefix on CharacterSystem.Event_PlayerJoinServer sets `createCharacter` moddata before vanilla reads it, because PlayerJoin runs before PlayerCreate.
 - On join: assigns a default character class if none is set.
 - Logs `[sparkbenchjoin]` lines to server-main.log.
 

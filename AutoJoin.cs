@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using HarmonyLib;
 using Vintagestory.API.Common;
 using Vintagestory.API.Server;
 using Vintagestory.API.Util;
@@ -11,6 +12,8 @@ namespace SparkBenchJoin
     {
         ICoreServerAPI sapi;
         bool survival;
+        Harmony harmony;
+        static ICoreServerAPI sapiStatic;
 
         public override bool ShouldLoad(EnumAppSide side) { return side == EnumAppSide.Server; }
 
@@ -22,7 +25,40 @@ namespace SparkBenchJoin
             survival = Environment.GetEnvironmentVariable("SPARKBENCH_SURVIVAL") == "1";
             api.Event.PlayerCreate += OnCreate;
             api.Event.PlayerJoin += OnJoin;
+            sapiStatic = api;
+            try
+            {
+                var target = AccessTools.Method(typeof(CharacterSystem), "Event_PlayerJoinServer");
+                if (target == null) api.Logger.Error("[sparkbenchjoin] Event_PlayerJoinServer not found, prefix NOT applied");
+                else
+                {
+                    harmony = new Harmony("sparkbenchjoin");
+                    harmony.Patch(target, prefix: new HarmonyMethod(typeof(AutoJoin), nameof(JoinPrefix)));
+                    api.Logger.Notification("[sparkbenchjoin] harmony patched Event_PlayerJoinServer");
+                }
+            }
+            catch (Exception e) { api.Logger.Error("[sparkbenchjoin] harmony patch failed: " + e); }
             api.Logger.Notification("[sparkbenchjoin] loaded, survival=" + survival);
+        }
+
+        public static void JoinPrefix(IServerPlayer byPlayer)
+        {
+            try
+            {
+                byte[] cur = byPlayer.GetModdata("createCharacter");
+                if (cur == null || !SerializerUtil.Deserialize<bool>(cur, false))
+                {
+                    byPlayer.SetModdata("createCharacter", SerializerUtil.Serialize(true));
+                    sapiStatic?.Logger.Notification("[sparkbenchjoin] prefix: createCharacter=true before vanilla join for " + byPlayer.PlayerName);
+                }
+            }
+            catch (Exception e) { sapiStatic?.Logger.Warning("[sparkbenchjoin] prefix failed: " + e.Message); }
+        }
+
+        public override void Dispose()
+        {
+            harmony?.UnpatchAll("sparkbenchjoin");
+            harmony = null;
         }
 
         void OnCreate(IServerPlayer p)

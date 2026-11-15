@@ -11,7 +11,8 @@ param(
   [int]$MinColumns = 49,
   [int]$MaxSeconds = 600,
   [int]$SettleSeconds = 60,
-  [string]$ColumnPattern = ''
+  [string]$ColumnPattern = '',
+  [double]$MinFreeCommitGB = 25
 )
 $ErrorActionPreference = 'Continue'
 $realData = Join-Path $env:APPDATA 'VintagestoryData'
@@ -35,8 +36,12 @@ $t0 = Get-Date
 # preflight
 $foreign = Get-Process | Where-Object { $_.ProcessName -match 'Vintagestory|Optimum' }
 if ($foreign) { $foreign | ForEach-Object { L "FOREIGN $($_.Id) $($_.ProcessName)" }; $res.notes += 'foreign game process, not touched'; Finish 9 }
-$freeGB = (Get-CimInstance Win32_OperatingSystem).FreePhysicalMemory / 1MB
+$os = Get-CimInstance Win32_OperatingSystem
+$freeGB = $os.FreePhysicalMemory / 1MB; $commitGB = $os.FreeVirtualMemory / 1MB
+$res.free_ram_gb = [math]::Round($freeGB,1); $res.free_commit_gb = [math]::Round($commitGB,1)
+L ("preflight: free RAM {0:N1} GB, free commit {1:N1} GB" -f $freeGB, $commitGB)
 if ($freeGB -lt 16) { L ("SKIP: free RAM {0:N1} GB < 16" -f $freeGB); $res.notes += 'low RAM'; Finish 8 }
+if ($commitGB -lt $MinFreeCommitGB) { L ("SKIP: free commit {0:N1} GB < $MinFreeCommitGB (never launch into pressure)" -f $commitGB); $res.notes += 'low commit'; Finish 8 }
 if (-not (Test-Path -LiteralPath $GameExe)) { L "no game exe $GameExe"; Finish 7 }
 if (-not (Test-Path -LiteralPath $ModZip)) { L "no mod zip $ModZip"; Finish 7 }
 $modDir = Join-Path $DataPath 'runmods'
@@ -77,7 +82,19 @@ while (((Get-Date) - $t0).TotalSeconds -lt $MaxSeconds) {
   }
 }
 $res.creative = [bool](Has $serverLog '\[sparkbenchjoin\] gamemode=Creative set'); L "creative set: $($res.creative)"
-if ($tJoin) { try { Add-Type -AssemblyName System.Windows.Forms, System.Drawing; $b = [System.Windows.Forms.Screen]::PrimaryScreen.Bounds; $bmp = New-Object System.Drawing.Bitmap $b.Width, $b.Height; $g = [System.Drawing.Graphics]::FromImage($bmp); $g.CopyFromScreen($b.Location, [System.Drawing.Point]::Empty, $b.Size); $shot = Join-Path $DataPath "new-world-shot-$stamp.png"; $bmp.Save($shot); $g.Dispose(); $bmp.Dispose(); $res.screenshot = $shot; L "screenshot $shot" } catch { L "screenshot failed: $_" } }
+if ($tJoin) { try {
+  Add-Type -AssemblyName System.Drawing
+  if (-not ('SbjWin' -as [type])) { Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public static class SbjWin { [StructLayout(LayoutKind.Sequential)] public struct RECT { public int L, T, R, B; } [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr h, out RECT r); [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr h, IntPtr hdc, uint f); }' }
+  $gp.Refresh(); $h = $gp.MainWindowHandle; $r = New-Object SbjWin+RECT; [void][SbjWin]::GetWindowRect($h, [ref]$r)
+  $w = $r.R - $r.L; $hh = $r.B - $r.T
+  $bmp = New-Object System.Drawing.Bitmap $w, $hh; $g = [System.Drawing.Graphics]::FromImage($bmp); $dc = $g.GetHdc()
+  $ok = [SbjWin]::PrintWindow($h, $dc, 2); $g.ReleaseHdc($dc)
+  # brightness sample so an all-black capture is flagged instead of trusted
+  $sum = 0; $n = 0; for ($x = 0; $x -lt $w; $x += [math]::Max(1, [int]($w / 40))) { for ($y = 0; $y -lt $hh; $y += [math]::Max(1, [int]($hh / 40))) { $p = $bmp.GetPixel($x, $y); $sum += ($p.R + $p.G + $p.B) / 3; $n++ } }
+  $shot = Join-Path $DataPath "new-world-shot-$stamp.png"; $bmp.Save($shot); $g.Dispose(); $bmp.Dispose()
+  $res.screenshot = $shot; $res.screenshot_mean = [int]($sum / [math]::Max(1, $n)); $res.screenshot_method = "PrintWindow(game hwnd) ok=$ok ${w}x$hh"
+  L "screenshot $shot (game window only, PrintWindow ok=$ok, mean brightness $($res.screenshot_mean))"
+} catch { L "screenshot failed: $_" } }
 $res.vram_mib.final = VPeak; if ($res.vram_mib.baseline -ne $null -and $res.vram_mib.peak -ne $null) { $res.vram_mib.delta_peak = $res.vram_mib.peak - $res.vram_mib.baseline }; L "vram final $($res.vram_mib.final) peak $($res.vram_mib.peak) MiB"
 if (-not $tJoin) { L 'FAIL: no join line within MaxSeconds'; $res.notes += 'timeout before join' }
 # dialog check: vanilla logs nothing on open, so best-effort grep plus server-side proof (moddata line)
@@ -94,4 +111,9 @@ if (-not $gp.HasExited) {
   if ($gp.WaitForExit(120000)) { $res.closed_normally = $true; L "exited code $($gp.ExitCode)" }
   else { L "no exit in 120 s, killing own pid $($gp.Id)"; $res.closed_normally = $false; $res.killed = $true; try { Stop-Process -Id $gp.Id -Force } catch { L "kill failed: $_" } }
 }
+# verify fully exited: our PID gone and no game process left before the next launch
+Start-Sleep 3
+$left = Get-Process | Where-Object { $_.ProcessName -match 'Vintagestory|Optimum' }
+$res.game_procs_after = @($left).Count
+if ($left) { $left | ForEach-Object { L "LEFTOVER game process $($_.Id) $($_.ProcessName) (not touched)" }; $res.notes += 'game process still present after close; do not launch again until it is gone'; Finish 4 }
 Finish $(if ($res.joined) { 0 } else { 3 })
